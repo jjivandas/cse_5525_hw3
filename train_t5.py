@@ -45,6 +45,8 @@ def get_args():
                         help="How should we name this experiment?")
 
     # Data hyperparameters
+    parser.add_argument('--resume', action='store_true',
+                        help="Resume training from latest checkpoint of the given experiment_name")
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--test_batch_size', type=int, default=16)
 
@@ -126,6 +128,7 @@ def train_epoch(args, model, train_loader, optimizer, scheduler):
         non_pad = decoder_targets != PAD_IDX
         loss = criterion(logits[non_pad], decoder_targets[non_pad])
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         if scheduler is not None: 
             scheduler.step()
@@ -169,16 +172,13 @@ def eval_epoch(args, model, dev_loader, gt_sql_pth, model_sql_path, gt_record_pa
             total_tokens += num_tokens
 
             # Generate predictions
-            gen_kwargs = dict(
+            generated = model.generate(
                 input_ids=encoder_input,
                 attention_mask=encoder_mask,
                 max_new_tokens=256,
+                num_beams=4,
                 decoder_start_token_id=initial_decoder_input[0, 0].item(),
             )
-            if not args.finetune:
-                gen_kwargs['repetition_penalty'] = 1.2
-                gen_kwargs['no_repeat_ngram_size'] = 3
-            generated = model.generate(**gen_kwargs)
             decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)
             all_predictions.extend(decoded)
 
@@ -212,16 +212,13 @@ def test_inference(args, model, test_loader, model_sql_path, model_record_path):
             encoder_input = encoder_input.to(DEVICE)
             encoder_mask = encoder_mask.to(DEVICE)
 
-            gen_kwargs = dict(
+            generated = model.generate(
                 input_ids=encoder_input,
                 attention_mask=encoder_mask,
                 max_new_tokens=256,
+                num_beams=4,
                 decoder_start_token_id=bos_id,
             )
-            if not args.finetune:
-                gen_kwargs['repetition_penalty'] = 1.2
-                gen_kwargs['no_repeat_ngram_size'] = 3
-            generated = model.generate(**gen_kwargs)
             decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)
             all_predictions.extend(decoded)
 
@@ -237,7 +234,11 @@ def main():
 
     # Load the data and the model
     train_loader, dev_loader, test_loader = load_t5_data(args.batch_size, args.test_batch_size)
-    model = initialize_model(args)
+    if args.resume:
+        print(f"Resuming from latest checkpoint for {args.experiment_name}")
+        model = load_model_from_checkpoint(args, best=False)
+    else:
+        model = initialize_model(args)
     optimizer, scheduler = initialize_optimizer_and_scheduler(args, model, len(train_loader))
 
     # Train 
