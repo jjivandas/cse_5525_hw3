@@ -131,9 +131,14 @@ def exp_kshot(tokenizer, model, inputs, k):
     for i, sentence in tqdm(enumerate(inputs)):
         prompt = create_prompt(sentence, k) # Looking at the prompt may also help
 
-        input_ids = tokenizer(prompt, return_tensors="pt").to(DEVICE)
-        outputs = model.generate(**input_ids, max_new_tokens=MAX_NEW_TOKENS) # You should set MAX_NEW_TOKENS
-        response = tokenizer.decode(outputs[0]) # How does the response look like? You may need to parse it
+        input_ids = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=2048).to(DEVICE)
+        outputs = model.generate(**input_ids, max_new_tokens=MAX_NEW_TOKENS,
+                                 temperature=0.3, do_sample=True, top_p=0.95,
+                                 pad_token_id=tokenizer.pad_token_id)
+        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Strip the prompt from the response
+        if len(prompt) < len(response):
+            response = response[len(prompt):].strip()
         raw_outputs.append(response)
 
         # Extract the SQL query
@@ -184,14 +189,17 @@ def initialize_model_and_tokenizer(model_name, to_quantize=False):
         if to_quantize:
             nf4_config = BitsAndBytesConfig(
                 load_in_4bit=True,
-                bnb_4bit_quant_type="nf4", # 4-bit quantization
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
             )
             model = AutoModelForCausalLM.from_pretrained(model_id,
-                                                        torch_dtype=torch.bfloat16,
-                                                        config=nf4_config).to(DEVICE)
+                                                        quantization_config=nf4_config,
+                                                        device_map="auto")
         else:
             model = AutoModelForCausalLM.from_pretrained(model_id,
                                                         torch_dtype=torch.bfloat16).to(DEVICE)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     return tokenizer, model
 
 
